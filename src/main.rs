@@ -42,13 +42,13 @@ struct Args {
     #[arg(short, long, value_name = "NAME")]
     name: Vec<String>,
 
-    /// Select all circuits (overrides --id and --name options, long-only)
-    #[arg(long)]
+    /// Select all circuits (overrides --id and --name options)
+    #[arg(short, long)]
     all: bool,
 
-    /// Print only the value of this specific attribute (e.g., "instantPowerW", "relayState")
-    #[arg(short, long)]
-    attribute: Option<String>,
+    /// Print only the value of this specific key (e.g., "instantPowerW", "relayState")
+    #[arg(short, long, value_name = "KEY")]
+    key: Option<String>,
 
     /// Separator string when printing attributes (long-only, defaults to a single space)
     #[arg(long, default_value = " ")]
@@ -67,7 +67,7 @@ struct Args {
     live: Option<u64>,
 
     /// Maximum number of retries if the API request fails
-    #[arg(long, value_name = "INT", default_value_t = 0)]
+    #[arg(long, value_name = "INT", default_value_t = 4)]
     max_retries: u32,
 
     /// Time (in seconds, can be fractional) to pause before retrying a failed API request
@@ -376,11 +376,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // 8. Output results
-        if let Some(ref attr) = args.attribute {
+        if let Some(ref key_name) = args.key {
             let mut output_parts = Vec::new();
             
             for (_id, circuit) in &selected_circuits {
-                let val_str = if let Some(val) = get_attribute_resilient(circuit, attr) {
+                let val_str = if let Some(val) = get_attribute_resilient(circuit, key_name) {
                     match val {
                         serde_json::Value::Null => "null".to_string(),
                         serde_json::Value::String(s) => s.clone(),
