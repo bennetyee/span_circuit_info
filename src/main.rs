@@ -14,20 +14,20 @@ use span_circuit_info::{fetch_circuits, load_auth_config};
     about = "Query and inspect SPAN panel circuits locally"
 )]
 struct Args {
-    /// IP address or hostname of the SPAN panel (long-only, requires --token)
-    #[arg(long, requires = "token", conflicts_with_all = ["auth_file", "panel"])]
+    /// IP address or hostname of the SPAN panel (overrides auth file configuration)
+    #[arg(long)]
     ip: Option<String>,
 
-    /// Optional bearer authentication token (requires --ip)
-    #[arg(short, long, requires = "ip", conflicts_with_all = ["auth_file", "panel"])]
+    /// Optional bearer authentication token (overrides auth file configuration)
+    #[arg(short, long)]
     token: Option<String>,
 
-    /// Path to the SPAN authentication JSON file (conflicts with --ip and --token)
-    #[arg(long, value_name = "FILE", conflicts_with_all = ["ip", "token"])]
+    /// Path to the SPAN authentication JSON file
+    #[arg(long, value_name = "FILE")]
     auth_file: Option<PathBuf>,
 
-    /// Name of the panel to query, overriding default_panel from config (conflicts with --ip and --token)
-    #[arg(short, long, value_name = "PANEL", conflicts_with_all = ["ip", "token"])]
+    /// Name of the panel to query, overriding default_panel from config
+    #[arg(short, long, value_name = "PANEL")]
     panel: Option<String>,
 
     /// Port to use for the HTTP or HTTPS connection (overrides auth file configuration)
@@ -77,6 +77,10 @@ struct Args {
     /// Disable TLS and connect using standard unencrypted HTTP
     #[arg(long)]
     no_tls: bool,
+
+    /// Suppress retry warnings and fatal connection messages on API failure
+    #[arg(long)]
+    quiet: bool,
 }
 
 fn get_string_field(obj: &serde_json::Value, field: &str) -> Option<String> {
@@ -161,39 +165,31 @@ fn apply_abs(val: &mut serde_json::Value) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
+    let mut hostname_from_file: Option<String> = None;
+    let mut token_from_file: Option<String> = None;
+    let mut port_from_file: Option<u16> = None;
+    let mut resolved_panel_name: Option<String> = None;
+
     // 1. Resolve auth file path (CLI -> SPAN_AUTH_FILE env -> default ~/.span-auth.json)
+    let mut auth_file_explicit = false;
     let auth_path = if let Some(path) = &args.auth_file {
+        auth_file_explicit = true;
         path.clone()
     } else if let Ok(env_path) = std::env::var("SPAN_AUTH_FILE") {
+        auth_file_explicit = true;
         PathBuf::from(env_path)
     } else {
         let home_dir = dirs::home_dir().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Could not determine the user's home directory. Provide --ip/--token, --auth-file, or set SPAN_AUTH_FILE.",
+                "Could not determine the user's home directory.",
             )
         })?;
         home_dir.join(".span-auth.json")
     };
 
-    // 2. Resolve credentials & target panel config
-    let (panel_ip, auth_token, panel_name, file_port) = if let (Some(ip), Some(token)) = (&args.ip, &args.token) {
-        // Fallback guess of panel name if hostname looks like standard "span-panelname.local"
-        let extracted_panel = if ip.starts_with("span-") && ip.ends_with(".local") {
-            Some(ip[5..ip.len() - 6].to_string())
-        } else {
-            None
-        };
-        (ip.clone(), Some(token.clone()), extracted_panel, None)
-    } else {
-        if !auth_path.exists() {
-            eprintln!(
-                "Error: Authentication file not found at {:?}. Run SPAN-auth setup, or provide --ip and --token.",
-                auth_path
-            );
-            std::process::exit(1);
-        }
-
+    // 2. Load the configuration defaults if the file exists
+    if auth_path.exists() {
         let auth_config = match load_auth_config(&auth_path) {
             Ok(cfg) => cfg,
             Err(e) => {
@@ -208,25 +204,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_config.default_panel.clone()
         };
 
-        let panel_credentials = auth_config.panels.get(&target_panel).ok_or_else(|| {
+        if let Some(panel_credentials) = auth_config.panels.get(&target_panel) {
+            hostname_from_file = Some(panel_credentials.hostname.clone());
+            token_from_file = panel_credentials.access_token.clone();
+            port_from_file = panel_credentials.port;
+            resolved_panel_name = Some(target_panel);
+        } else {
+            eprintln!("Error: Panel '{}' not found in authentication configuration file.", target_panel);
+            std::process::exit(1);
+        }
+    } else if auth_file_explicit {
+        // If they explicitly requested a configuration file and it doesn't exist, exit.
+        eprintln!("Error: Specified authentication file not found at {:?}", auth_path);
+        std::process::exit(1);
+    }
+
+    // 3. Resolve connection parameters. CLI overrides have precedence over file parameters.
+    let panel_ip = args.ip.clone()
+        .or(hostname_from_file)
+        .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Panel '{}' not found in authentication configuration file.", target_panel),
+                "Could not resolve the SPAN panel IP or hostname. Please provide --ip or set up ~/.span-auth.json.",
             )
         })?;
 
-        (
-            panel_credentials.hostname.clone(),
-            panel_credentials.access_token.clone(),
-            Some(target_panel),
-            panel_credentials.port,
-        )
-    };
+    let auth_token = args.token.clone().or(token_from_file);
+    let active_port = args.port.or(port_from_file);
 
-    // CLI --port overrides file-defined port if both are present
-    let active_port = args.port.or(file_port);
+    // Try resolving the panel name to locate CA cert if it was not resolved from file
+    let panel_name = resolved_panel_name.or_else(|| {
+        if panel_ip.starts_with("span-") && panel_ip.ends_with(".local") {
+            Some(panel_ip[5..panel_ip.len() - 6].to_string())
+        } else {
+            None
+        }
+    });
 
-    // 3. Resolve CA directory (SPAN_CA_CERT_DIR env -> default ~/.span-ca-certs)
+    // 4. Resolve CA directory (SPAN_CA_CERT_DIR env -> default ~/.span-ca-certs)
     let ca_cert_dir = if let Ok(env_dir) = std::env::var("SPAN_CA_CERT_DIR") {
         PathBuf::from(env_dir)
     } else {
@@ -239,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         home_dir.join(".span-ca-certs")
     };
 
-    // 4. Build HTTP Client and configure TLS Certificates
+    // 5. Build HTTP Client and configure TLS Certificates
     let use_tls = !args.no_tls;
     let mut client_builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(5));
@@ -275,7 +290,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = client_builder.build()?;
     let retry_sleep_duration = Duration::from_secs_f64(args.retry_sleep);
 
-    // 5. Main execution / Polling loop
+    // 6. Main execution / Polling loop
     loop {
         let mut attempt = 0;
         let spaces = loop {
@@ -284,13 +299,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => {
                     if attempt < args.max_retries {
                         attempt += 1;
-                        eprintln!(
-                            "Warning: API request failed ({}). Retrying in {}s (attempt {}/{})...",
-                            e, args.retry_sleep, attempt, args.max_retries
-                        );
+                        if !args.quiet {
+                            eprintln!(
+                                "Warning: API request failed ({}). Retrying in {}s (attempt {}/{})...",
+                                e, args.retry_sleep, attempt, args.max_retries
+                            );
+                        }
                         tokio::time::sleep(retry_sleep_duration).await;
                     } else {
-                        eprintln!("Error fetching circuit data from SPAN panel ({}): {}", panel_ip, e);
+                        if !args.quiet {
+                            eprintln!("Error fetching circuit data from SPAN panel ({}): {}", panel_ip, e);
+                        }
                         std::process::exit(1);
                     }
                 }
@@ -300,7 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Stores (ID, Circuit JSON Object) to preserve key associations and ordering
         let mut selected_circuits: Vec<(String, serde_json::Value)> = Vec::new();
 
-        // 6. Selection and sorting logic
+        // 7. Selection and sorting logic
         if args.all {
             let mut all_ids: Vec<&String> = spaces.keys().collect();
             all_ids.sort();
@@ -368,14 +387,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
 
-        // 7. Apply absolute value transformation if requested
+        // 8. Apply absolute value transformation if requested
         if args.abs {
             for (_id, circuit) in &mut selected_circuits {
                 apply_abs(circuit);
             }
         }
 
-        // 8. Output results
+        // 9. Output results
         if let Some(ref key_name) = args.key {
             let mut output_parts = Vec::new();
             
@@ -409,7 +428,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", output_json);
         }
 
-        // 9. Polling control
+        // 10. Polling control
         if let Some(secs) = args.live {
             tokio::time::sleep(Duration::from_secs(secs)).await;
         } else {
