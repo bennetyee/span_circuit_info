@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 // Import operations and structures from library
-use span_cli::{fetch_circuits, load_auth_config};
+use span_circuit_info::{fetch_circuits, load_auth_config};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "span-cli",
+    name = "span_circuit_info",
     author,
     version,
     about = "Query and inspect SPAN panel circuits locally"
