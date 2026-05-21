@@ -18,8 +18,8 @@ struct Args {
     #[arg(long)]
     ip: Option<String>,
 
-    /// Optional bearer authentication token (overrides auth file configuration)
-    #[arg(short, long)]
+    /// Optional bearer authentication token (overrides auth file configuration, long-only to avoid -t conflict)
+    #[arg(long)]
     token: Option<String>,
 
     /// Path to the SPAN authentication JSON file
@@ -81,47 +81,51 @@ struct Args {
     /// Suppress retry warnings and fatal connection messages on API failure
     #[arg(long)]
     quiet: bool,
+
+    /// Add a Unix epoch timestamp in floating-point seconds (only applicable when used with --key)
+    #[arg(short = 't', long = "time-stamp")]
+    time_stamp: bool,
 }
 
 fn get_string_field(obj: &serde_json::Value, field: &str) -> Option<String> {
-    obj.get(field).and_then(|v| v.as_str().map(|s| s.to_string()))
+    obj.get(field)
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
 }
 
-/// Normalizes casing and separators (case-insensitive, strips '-' and '_') 
+/// Normalizes casing and separators (case-insensitive, strips '-' and '_')
 /// to resolve casing mismatches between CLI inputs and SPAN API keys.
-fn get_attribute_resilient<'a>(obj: &'a serde_json::Value, attr: &str) -> Option<&'a serde_json::Value> {
+fn get_attribute_resilient<'a>(
+    obj: &'a serde_json::Value,
+    attr: &str,
+) -> Option<&'a serde_json::Value> {
     let map = obj.as_object()?;
-    
+
     // 1. Exact match fallback
     if let Some(val) = map.get(attr) {
         return Some(val);
     }
-    
+
     // 2. Normalized search
-    let normalize = |s: &str| -> String {
-        s.to_lowercase()
-            .replace('_', "")
-            .replace('-', "")
-    };
-    
+    let normalize = |s: &str| -> String { s.to_lowercase().replace('_', "").replace('-', "") };
+
     let target = normalize(attr);
     for (k, v) in map {
         if normalize(k) == target {
             return Some(v);
         }
     }
-    
+
     None
 }
 
-/// Prepares and shell-quotes a string value. If `should_quote` is true, 
+/// Prepares and shell-quotes a string value. If `should_quote` is true,
 /// single quotes are escaped for POSIX shells and a space is prepended if the value begins with '-'.
 fn prepare_and_quote(mut val_str: String, should_quote: bool) -> String {
     if should_quote {
         if val_str.starts_with('-') {
             val_str = format!(" {}", val_str);
         }
-        // In POSIX single-quoted strings, single quotes are escaped by closing 
+        // In POSIX single-quoted strings, single quotes are escaped by closing
         // the quote context, writing an escaped quote, and reopening.
         let escaped = val_str.replace('\'', r#"'\''"#);
         format!("'{}'", escaped)
@@ -130,7 +134,7 @@ fn prepare_and_quote(mut val_str: String, should_quote: bool) -> String {
     }
 }
 
-/// Recursively traverses a JSON value and replaces all negative numerical values 
+/// Recursively traverses a JSON value and replaces all negative numerical values
 /// with their absolute equivalents.
 fn apply_abs(val: &mut serde_json::Value) {
     match val {
@@ -193,7 +197,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let auth_config = match load_auth_config(&auth_path) {
             Ok(cfg) => cfg,
             Err(e) => {
-                eprintln!("Error: Authentication file at {:?} is malformed: {}", auth_path, e);
+                eprintln!(
+                    "Error: Authentication file at {:?} is malformed: {}",
+                    auth_path, e
+                );
                 std::process::exit(1);
             }
         };
@@ -210,12 +217,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             port_from_file = panel_credentials.port;
             resolved_panel_name = Some(target_panel);
         } else {
-            eprintln!("Error: Panel '{}' not found in authentication configuration file.", target_panel);
+            eprintln!(
+                "Error: Panel '{}' not found in authentication configuration file.",
+                target_panel
+            );
             std::process::exit(1);
         }
     } else if auth_file_explicit {
         // If they explicitly requested a configuration file and it doesn't exist, exit.
-        eprintln!("Error: Specified authentication file not found at {:?}", auth_path);
+        eprintln!(
+            "Error: Specified authentication file not found at {:?}",
+            auth_path
+        );
         std::process::exit(1);
     }
 
@@ -256,24 +269,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 5. Build HTTP Client and configure TLS Certificates
     let use_tls = !args.no_tls;
-    let mut client_builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5));
+    let mut client_builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
 
     if use_tls {
         if let Some(p_name) = &panel_name {
             let cert_path = ca_cert_dir.join(format!("{}.crt", p_name));
             if cert_path.exists() {
                 match std::fs::read(&cert_path) {
-                    Ok(cert_bytes) => {
-                        match reqwest::Certificate::from_pem(&cert_bytes) {
-                            Ok(cert) => {
-                                client_builder = client_builder.add_root_certificate(cert);
-                            }
-                            Err(e) => {
-                                eprintln!("Warning: Failed to parse CA cert from {:?}: {}", cert_path, e);
-                            }
+                    Ok(cert_bytes) => match reqwest::Certificate::from_pem(&cert_bytes) {
+                        Ok(cert) => {
+                            client_builder = client_builder.add_root_certificate(cert);
                         }
-                    }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: Failed to parse CA cert from {:?}: {}",
+                                cert_path, e
+                            );
+                        }
+                    },
                     Err(e) => {
                         eprintln!("Warning: Failed to read CA cert at {:?}: {}", cert_path, e);
                     }
@@ -294,7 +307,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let mut attempt = 0;
         let spaces = loop {
-            match fetch_circuits(&client, &panel_ip, active_port, use_tls, auth_token.as_deref()).await {
+            match fetch_circuits(
+                &client,
+                &panel_ip,
+                active_port,
+                use_tls,
+                auth_token.as_deref(),
+            )
+            .await
+            {
                 Ok(s) => break s,
                 Err(e) => {
                     if attempt < args.max_retries {
@@ -308,7 +329,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tokio::time::sleep(retry_sleep_duration).await;
                     } else {
                         if !args.quiet {
-                            eprintln!("Error fetching circuit data from SPAN panel ({}): {}", panel_ip, e);
+                            eprintln!(
+                                "Error fetching circuit data from SPAN panel ({}): {}",
+                                panel_ip, e
+                            );
                         }
                         std::process::exit(1);
                     }
@@ -396,8 +420,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 9. Output results
         if let Some(ref key_name) = args.key {
-            let mut output_parts = Vec::new();
-            
+            // Pre-allocate the vector with exact capacity to minimize allocations [4.1]
+            let capacity = selected_circuits.len() + if args.time_stamp { 1 } else { 0 };
+            let mut output_parts = Vec::with_capacity(capacity);
+
+            // Push timestamp first if requested, guaranteeing O(1) appends
+            if args.time_stamp {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+
+                let ts_str = prepare_and_quote(format!("{}", now), args.quote);
+                output_parts.push(ts_str);
+            }
+
             for (_id, circuit) in &selected_circuits {
                 let val_str = if let Some(val) = get_attribute_resilient(circuit, key_name) {
                     match val {
@@ -410,11 +447,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     "null".to_string()
                 };
-                
+
                 let formatted = prepare_and_quote(val_str, args.quote);
                 output_parts.push(formatted);
             }
-            
+
             let joined = output_parts.join(&args.separator);
             println!("{}", joined);
         } else {
@@ -423,7 +460,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (id, circuit) in selected_circuits {
                 output_map.insert(id, circuit);
             }
-            
+
             let output_json = serde_json::to_string_pretty(&serde_json::Value::Object(output_map))?;
             println!("{}", output_json);
         }
