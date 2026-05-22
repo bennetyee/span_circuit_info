@@ -83,8 +83,8 @@ struct Args {
     quiet: bool,
 
     /// Add a Unix epoch timestamp in floating-point seconds (only applicable when used with --key)
-    #[arg(short = 't', long = "time-stamp")]
-    time_stamp: bool,
+    #[arg(short = 't', long = "timestamp")]
+    timestamp: bool,
 }
 
 fn get_string_field(obj: &serde_json::Value, field: &str) -> Option<String> {
@@ -421,11 +421,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 9. Output results
         if let Some(ref key_name) = args.key {
             // Pre-allocate the vector with exact capacity to minimize allocations [4.1]
-            let capacity = selected_circuits.len() + if args.time_stamp { 1 } else { 0 };
+            let capacity = selected_circuits.len() + if args.timestamp { 1 } else { 0 };
             let mut output_parts = Vec::with_capacity(capacity);
 
             // Push timestamp first if requested, guaranteeing O(1) appends
-            if args.time_stamp {
+            if args.timestamp {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
