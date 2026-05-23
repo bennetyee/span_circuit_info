@@ -37,12 +37,12 @@ pub async fn fetch_circuits(
     auth_token: Option<&str>,
 ) -> Result<HashMap<String, serde_json::Value>, Box<dyn std::error::Error>> {
     let scheme = if use_tls { "https" } else { "http" };
-    
+
     let url = match port {
         Some(p) => format!("{}://{}:{}/api/v1/circuits", scheme, panel_ip, p),
         None => format!("{}://{}/api/v1/circuits", scheme, panel_ip),
     };
-    
+
     let mut request = client.get(&url);
 
     if let Some(token) = auth_token {

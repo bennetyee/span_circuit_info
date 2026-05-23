@@ -67,12 +67,16 @@ struct Args {
     live: Option<u64>,
 
     /// Maximum number of retries if the API request fails
-    #[arg(long, value_name = "INT", default_value_t = 4)]
+    #[arg(long, value_name = "INT", default_value_t = 10)]
     max_retries: u32,
 
-    /// Time (in seconds, can be fractional) to pause before retrying a failed API request
-    #[arg(long, value_name = "SECONDS", default_value_t = 0.5)]
-    retry_sleep: f64,
+    /// Initial backoff time (in seconds, can be fractional) before the first retry
+    #[arg(long, value_name = "SECONDS", default_value_t = 0.1)]
+    initial_retry_backoff: f64,
+
+    /// Multiplier applied to the backoff interval on each consecutive retry failure
+    #[arg(long, value_name = "MULTIPLIER", default_value_t = 2.0)]
+    retry_backoff_multiplier: f64,
 
     /// Disable TLS and connect using standard unencrypted HTTP
     #[arg(long)]
@@ -168,6 +172,12 @@ fn apply_abs(val: &mut serde_json::Value) {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Validate the backoff multiplier value
+    if args.retry_backoff_multiplier < 1.0 {
+        eprintln!("Error: --retry-backoff-multiplier must be 1.0 or greater.");
+        std::process::exit(1);
+    }
 
     let mut hostname_from_file: Option<String> = None;
     let mut token_from_file: Option<String> = None;
@@ -301,11 +311,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let client = client_builder.build()?;
-    let retry_sleep_duration = Duration::from_secs_f64(args.retry_sleep);
 
     // 6. Main execution / Polling loop
     loop {
         let mut attempt = 0;
+        let mut current_backoff = args.initial_retry_backoff;
+
         let spaces = loop {
             match fetch_circuits(
                 &client,
@@ -322,11 +333,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         attempt += 1;
                         if !args.quiet {
                             eprintln!(
-                                "Warning: API request failed ({}). Retrying in {}s (attempt {}/{})...",
-                                e, args.retry_sleep, attempt, args.max_retries
+                                "Warning: API request failed ({}). Retrying in {:.3}s (attempt {}/{})...",
+                                e, current_backoff, attempt, args.max_retries
                             );
                         }
-                        tokio::time::sleep(retry_sleep_duration).await;
+                        tokio::time::sleep(Duration::from_secs_f64(current_backoff)).await;
+                        current_backoff *= args.retry_backoff_multiplier;
                     } else {
                         if !args.quiet {
                             eprintln!(
