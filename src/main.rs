@@ -67,7 +67,12 @@ struct Args {
     live: Option<u64>,
 
     /// Maximum number of retries if the API request fails (-1 for infinite retries)
-    #[arg(long, value_name = "INT", default_value_t = -1, allow_negative_numbers = true)]
+    #[arg(
+        long,
+        value_name = "INT",
+        default_value_t = -1,
+        allow_negative_numbers = true
+    )]
     max_retries: i32,
 
     /// Initial backoff time (in seconds, can be fractional) before the first retry
@@ -253,7 +258,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 3. Resolve connection parameters. CLI overrides have precedence over file parameters.
-    let panel_ip = args.ip.clone()
+    let panel_ip = args
+        .ip
+        .clone()
         .or(hostname_from_file)
         .ok_or_else(|| {
             std::io::Error::new(
@@ -348,9 +355,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 args.max_retries.to_string()
                             };
+                            let time_str =
+                                chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                             eprintln!(
-                                "Warning: API request failed ({}). Retrying in {:.3}s (attempt {}/{})...",
-                                e, current_backoff, attempt, max_str
+                                "[{}] Warning: API request failed ({}). Retrying in {:.3}s (attempt {}/{})...",
+                                time_str, e, current_backoff, attempt, max_str
                             );
                         }
                         tokio::time::sleep(Duration::from_secs_f64(current_backoff)).await;
@@ -358,9 +367,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .min(args.max_retry_backoff);
                     } else {
                         if !args.quiet {
+                            let time_str =
+                                chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                             eprintln!(
-                                "Error fetching circuit data from SPAN panel ({}): {}",
-                                panel_ip, e
+                                "[{}] Error fetching circuit data from SPAN panel ({}): {}",
+                                time_str, panel_ip, e
                             );
                         }
                         std::process::exit(1);
