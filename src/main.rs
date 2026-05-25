@@ -67,12 +67,7 @@ struct Args {
     live: Option<u64>,
 
     /// Maximum number of retries if the API request fails (-1 for infinite retries)
-    #[arg(
-        long,
-        value_name = "INT",
-        default_value_t = -1,
-        allow_negative_numbers = true
-    )]
+    #[arg(long, value_name = "INT", default_value_t = -1, allow_negative_numbers = true)]
     max_retries: i32,
 
     /// Initial backoff time (in seconds, can be fractional) before the first retry
@@ -82,6 +77,10 @@ struct Args {
     /// Multiplier applied to the backoff interval on each consecutive retry failure
     #[arg(long, value_name = "MULTIPLIER", default_value_t = 2.0)]
     retry_backoff_multiplier: f64,
+
+    /// Maximum backoff time (in seconds) allowed between retries (defaults to 5 minutes / 300 seconds)
+    #[arg(long, value_name = "SECONDS", default_value_t = 300.0)]
+    max_retry_backoff: f64,
 
     /// Disable TLS and connect using standard unencrypted HTTP
     #[arg(long)]
@@ -181,6 +180,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Validate the backoff multiplier value
     if args.retry_backoff_multiplier < 1.0 {
         eprintln!("Error: --retry-backoff-multiplier must be 1.0 or greater.");
+        std::process::exit(1);
+    }
+
+    // Validate the max backoff duration value
+    if args.max_retry_backoff <= 0.0 {
+        eprintln!("Error: --max-retry-backoff must be a positive, non-zero number.");
         std::process::exit(1);
     }
 
@@ -320,7 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6. Main execution / Polling loop
     loop {
         let mut attempt = 0;
-        let mut current_backoff = args.initial_retry_backoff;
+        let mut current_backoff = args.initial_retry_backoff.min(args.max_retry_backoff);
 
         let spaces = loop {
             match fetch_circuits(
@@ -349,7 +354,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                         }
                         tokio::time::sleep(Duration::from_secs_f64(current_backoff)).await;
-                        current_backoff *= args.retry_backoff_multiplier;
+                        current_backoff = (current_backoff * args.retry_backoff_multiplier)
+                            .min(args.max_retry_backoff);
                     } else {
                         if !args.quiet {
                             eprintln!(
