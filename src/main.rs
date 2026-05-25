@@ -70,7 +70,7 @@ struct Args {
     #[arg(
         long,
         value_name = "INT",
-        default_value_t = 10,
+        default_value_t = -1,
         allow_negative_numbers = true
     )]
     max_retries: i32,
