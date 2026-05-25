@@ -66,9 +66,14 @@ struct Args {
     #[arg(long, value_name = "SECONDS")]
     live: Option<u64>,
 
-    /// Maximum number of retries if the API request fails
-    #[arg(long, value_name = "INT", default_value_t = 10)]
-    max_retries: u32,
+    /// Maximum number of retries if the API request fails (-1 for infinite retries)
+    #[arg(
+        long,
+        value_name = "INT",
+        default_value_t = 10,
+        allow_negative_numbers = true
+    )]
+    max_retries: i32,
 
     /// Initial backoff time (in seconds, can be fractional) before the first retry
     #[arg(long, value_name = "SECONDS", default_value_t = 0.1)]
@@ -329,12 +334,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 Ok(s) => break s,
                 Err(e) => {
-                    if attempt < args.max_retries {
+                    let is_infinite = args.max_retries < 0;
+                    if is_infinite || attempt < args.max_retries {
                         attempt += 1;
                         if !args.quiet {
+                            let max_str = if is_infinite {
+                                "∞".to_string()
+                            } else {
+                                args.max_retries.to_string()
+                            };
                             eprintln!(
                                 "Warning: API request failed ({}). Retrying in {:.3}s (attempt {}/{})...",
-                                e, current_backoff, attempt, args.max_retries
+                                e, current_backoff, attempt, max_str
                             );
                         }
                         tokio::time::sleep(Duration::from_secs_f64(current_backoff)).await;
